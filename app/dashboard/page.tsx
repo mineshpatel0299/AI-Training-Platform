@@ -6,12 +6,13 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { Brain, Video, Award, Clock, CheckCircle, Play, LogOut, User, TrendingUp } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Brain, Video, Award, Clock, CheckCircle, Play, LogOut, User, TrendingUp, RefreshCw, AlertTriangle } from 'lucide-react'
 import Link from "next/link"
 import { signOut } from "firebase/auth"
 import { auth } from "@/lib/supabase"
 import { useAuth } from "@/hooks/useAuth"
-import { getTrainingModules, getUserProgress, getAIBasicsVideos } from "@/lib/firebase-service"
+import { ApiService } from "@/lib/api-service"
 import type { Database } from "@/lib/supabase"
 
 type TrainingModule = Database["public"]["Tables"]["training_modules"]["Row"]
@@ -28,6 +29,12 @@ export default function DashboardPage() {
     progress: true,
     videos: true,
   })
+  const [errors, setErrors] = useState({
+    modules: null as string | null,
+    progress: null as string | null,
+    videos: null as string | null,
+  })
+  const [debugInfo, setDebugInfo] = useState<any>(null)
   const router = useRouter()
 
   useEffect(() => {
@@ -37,7 +44,6 @@ export default function DashboardPage() {
     }
 
     if (user) {
-      // Fetch data in parallel for better performance
       fetchDataOptimized()
     }
   }, [user, initialized, router])
@@ -45,38 +51,72 @@ export default function DashboardPage() {
   const fetchDataOptimized = async () => {
     if (!user) return
 
-    // Fetch all data in parallel instead of sequentially
-    const fetchPromises = [
-      getTrainingModules().then((result) => {
-        if (result.success) {
-          setModules(result.data || [])
-        }
-        setLoadingStates((prev) => ({ ...prev, modules: false }))
-      }),
-      getUserProgress(user.uid).then((result) => {
-        if (result.success) {
-          setProgress(result.data || [])
-        }
-        setLoadingStates((prev) => ({ ...prev, progress: false }))
-      }),
-      getAIBasicsVideos(5).then((result) => {
-        if (result.success) {
-          setVideos(result.data || [])
-        }
-        setLoadingStates((prev) => ({ ...prev, videos: false }))
-      }),
-    ]
+    console.log("🔍 Dashboard: Starting data fetch for user:", user.uid)
 
+    // Reset errors
+    setErrors({ modules: null, progress: null, videos: null })
+
+    // Fetch modules via API
+    console.log("📚 Dashboard: Fetching modules via API...")
     try {
-      await Promise.all(fetchPromises)
+      const modulesResult = await ApiService.getTrainingModules()
+      console.log("📊 Dashboard: Modules result:", modulesResult)
+      
+      if (modulesResult.success) {
+        const moduleData = modulesResult.data || []
+        console.log(`✅ Dashboard: Successfully fetched ${moduleData.length} modules`)
+        setModules(moduleData)
+      } else {
+        console.error("❌ Dashboard: Failed to fetch modules:", modulesResult.error)
+        setErrors(prev => ({ ...prev, modules: modulesResult.error }))
+      }
     } catch (error) {
-      console.error("Error fetching dashboard data:", error)
-      // Set all loading states to false even on error
-      setLoadingStates({
-        modules: false,
-        progress: false,
-        videos: false,
-      })
+      console.error("💥 Dashboard: Error fetching modules:", error)
+      setErrors(prev => ({ ...prev, modules: error.message }))
+    } finally {
+      setLoadingStates(prev => ({ ...prev, modules: false }))
+    }
+
+    // Fetch progress via API
+    console.log("📈 Dashboard: Fetching progress via API...")
+    try {
+      const progressResult = await ApiService.getUserProgress(user.uid)
+      console.log("📊 Dashboard: Progress result:", progressResult)
+      
+      if (progressResult.success) {
+        const progressData = progressResult.data || []
+        console.log(`✅ Dashboard: Successfully fetched ${progressData.length} progress records`)
+        setProgress(progressData)
+      } else {
+        console.error("❌ Dashboard: Failed to fetch progress:", progressResult.error)
+        setErrors(prev => ({ ...prev, progress: progressResult.error }))
+      }
+    } catch (error) {
+      console.error("💥 Dashboard: Error fetching progress:", error)
+      setErrors(prev => ({ ...prev, progress: error.message }))
+    } finally {
+      setLoadingStates(prev => ({ ...prev, progress: false }))
+    }
+
+    // Fetch videos via API
+    console.log("🎬 Dashboard: Fetching videos via API...")
+    try {
+      const videosResult = await ApiService.getAIBasicsVideos(5)
+      console.log("📊 Dashboard: Videos result:", videosResult)
+      
+      if (videosResult.success) {
+        const videoData = videosResult.data || []
+        console.log(`✅ Dashboard: Successfully fetched ${videoData.length} videos`)
+        setVideos(videoData)
+      } else {
+        console.error("❌ Dashboard: Failed to fetch videos:", videosResult.error)
+        setErrors(prev => ({ ...prev, videos: videosResult.error }))
+      }
+    } catch (error) {
+      console.error("💥 Dashboard: Error fetching videos:", error)
+      setErrors(prev => ({ ...prev, videos: error.message }))
+    } finally {
+      setLoadingStates(prev => ({ ...prev, videos: false }))
     }
   }
 
@@ -87,6 +127,19 @@ export default function DashboardPage() {
     } catch (error) {
       console.error("Logout error:", error)
     }
+  }
+
+  const handleDebug = async () => {
+    console.log("🔍 Running debug...")
+    const debugResult = await ApiService.debugFirestore()
+    setDebugInfo(debugResult)
+    console.log("🔍 Debug result:", debugResult)
+  }
+
+  const handleRetry = () => {
+    console.log("🔄 Retrying data fetch...")
+    setLoadingStates({ modules: true, progress: true, videos: true })
+    fetchDataOptimized()
   }
 
   const getModuleProgress = (moduleId: string) => {
@@ -121,6 +174,7 @@ export default function DashboardPage() {
     return null
   }
 
+  const hasErrors = Object.values(errors).some(error => error !== null)
   const isAnyDataLoading = Object.values(loadingStates).some((loading) => loading)
 
   return (
@@ -134,6 +188,10 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-center space-x-4">
             <span className="text-sm text-gray-600">Welcome, {user.displayName || user.email}</span>
+            {/* <Button variant="ghost" size="sm" onClick={handleDebug}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Debug
+            </Button> */}
             <Button variant="ghost" size="sm">
               <User className="h-4 w-4 mr-2" />
               Profile
@@ -152,6 +210,42 @@ export default function DashboardPage() {
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Welcome back, {user?.displayName || "Learner"}!</h1>
           <p className="text-gray-600">Continue your AI compliance training journey</p>
         </div>
+
+        {/* Error Display */}
+        {/* {hasErrors && (
+          <Alert className="mb-6 border-red-200 bg-red-50">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              <div className="space-y-2">
+                <p className="font-medium">Some data failed to load:</p>
+                {errors.modules && <p>• Modules: {errors.modules}</p>}
+                {errors.progress && <p>• Progress: {errors.progress}</p>}
+                {errors.videos && <p>• Videos: {errors.videos}</p>}
+                <div className="flex gap-2 mt-3">
+                  <Button onClick={handleRetry} size="sm" variant="outline">
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Retry
+                  </Button>
+                  <Button onClick={handleDebug} size="sm" variant="outline">
+                    Debug Database
+                  </Button>
+                </div>
+              </div>
+            </AlertDescription>
+          </Alert>
+        )} */}
+
+        {/* Debug Info Display */}
+        {debugInfo && (
+          <Card className="mb-6 border-blue-200 bg-blue-50">
+            <CardHeader>
+              <CardTitle className="text-blue-800">Debug Information</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <pre className="text-xs text-blue-700 overflow-auto max-h-64">{JSON.stringify(debugInfo, null, 2)}</pre>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Progress Overview - Show with skeleton loading */}
         <div className="grid md:grid-cols-3 gap-6 mb-8">
@@ -211,10 +305,10 @@ export default function DashboardPage() {
               ) : (
                 <>
                   <div className="text-2xl font-bold">
-                    {completedModules === modules.length ? "Ready!" : "In Progress"}
+                    {completedModules === modules.length && modules.length > 0 ? "Ready!" : "In Progress"}
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    {completedModules === modules.length
+                    {completedModules === modules.length && modules.length > 0
                       ? "Claim your certificate"
                       : `Complete ${modules.length - completedModules} more modules`}
                   </p>
@@ -254,7 +348,7 @@ export default function DashboardPage() {
                       </CardHeader>
                     </Card>
                   ))
-                : modules.map((module, index) => {
+                : modules.length > 0 ? modules.map((module, index) => {
                     const moduleProgress = getModuleProgress(module.id)
                     const isCompleted = isModuleCompleted(module.id)
 
@@ -300,10 +394,30 @@ export default function DashboardPage() {
                         )}
                       </Card>
                     )
-                  })}
+                  }) : (
+                    // No modules found
+                    <Card>
+                      <CardContent className="flex items-center justify-center h-64">
+                        <div className="text-center">
+                          <Brain className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+                          <p className="text-gray-600 mb-2">No training modules found</p>
+                          <p className="text-sm text-gray-500 mb-4">Please run the seed script to add module data</p>
+                          <div className="flex gap-2 justify-center">
+                            <Button onClick={handleRetry} variant="outline">
+                              <RefreshCw className="h-4 w-4 mr-2" />
+                              Retry Loading
+                            </Button>
+                            <Button onClick={handleDebug} variant="outline">
+                              Debug Database
+                            </Button>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
             </div>
 
-            {!loadingStates.modules && !loadingStates.progress && completedModules === modules.length && (
+            {!loadingStates.modules && !loadingStates.progress && completedModules === modules.length && modules.length > 0 && (
               <Card className="mt-6 bg-gradient-to-r from-green-50 to-blue-50 border-green-200">
                 <CardHeader>
                   <div className="flex items-center space-x-2">
@@ -351,7 +465,7 @@ export default function DashboardPage() {
                       </div>
                     ))}
                   </div>
-                ) : (
+                ) : videos.length > 0 ? (
                   <div className="space-y-3">
                     {videos.map((video, index) => (
                       <div key={video.id} className="flex items-center space-x-3 p-2 rounded-lg hover:bg-gray-50">
@@ -367,6 +481,11 @@ export default function DashboardPage() {
                         </Button>
                       </div>
                     ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-4">
+                    <Video className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+                    <p className="text-sm text-gray-500">No videos found</p>
                   </div>
                 )}
                 <Link href="/ai-basics">

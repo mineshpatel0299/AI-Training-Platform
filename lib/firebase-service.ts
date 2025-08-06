@@ -174,6 +174,7 @@ export const getModuleProgress = async (userId: string, moduleId: string) => {
   }
 }
 
+// Enhanced updateUserProgress with certificate generation logic
 export const updateUserProgress = async (
   userId: string,
   moduleId: string,
@@ -192,16 +193,13 @@ export const updateUserProgress = async (
       updated_at: serverTimestamp(),
     }
 
+    let progressResult
+
     if (!querySnapshot.empty) {
       // Update existing progress
       const docRef = querySnapshot.docs[0].ref
       await updateDoc(docRef, updateData)
-
-      // Clear cache for this user's progress
-      cache.delete(`user_progress_${userId}`)
-      cache.delete(`module_progress_${userId}_${moduleId}`)
-
-      return { success: true, data: { id: docRef.id, ...updateData } }
+      progressResult = { id: docRef.id, ...updateData }
     } else {
       // Create new progress record
       const docRef = await addDoc(collection(db, "user_progress"), {
@@ -212,15 +210,107 @@ export const updateUserProgress = async (
         ...updateData,
         created_at: serverTimestamp(),
       })
-
-      // Clear cache for this user's progress
-      cache.delete(`user_progress_${userId}`)
-
-      return { success: true, data: { id: docRef.id, ...updateData } }
+      progressResult = { id: docRef.id, ...updateData }
     }
+
+    // Clear cache for this user's progress
+    cache.delete(`user_progress_${userId}`)
+    cache.delete(`module_progress_${userId}_${moduleId}`)
+
+    // Check if user completed all modules and auto-generate certificate
+    if (progressData.completed_at) {
+      console.log("🎓 Module completed, checking for certificate eligibility...")
+      await checkAndGenerateCertificate(userId)
+    }
+
+    return { success: true, data: progressResult }
   } catch (error) {
     console.error("Error updating user progress:", error)
     return { success: false, error }
+  }
+}
+
+// New function to check and auto-generate certificate
+export const checkAndGenerateCertificate = async (userId: string) => {
+  try {
+    console.log("🔍 Checking certificate eligibility for user:", userId)
+
+    // Check if user already has a certificate
+    const existingCertificate = await getUserCertificate(userId)
+    if (existingCertificate.success && existingCertificate.data) {
+      console.log("📜 User already has a certificate")
+      return { success: true, message: "Certificate already exists" }
+    }
+
+    // Get all active modules
+    const modulesResult = await getTrainingModules()
+    if (!modulesResult.success) {
+      console.error("❌ Failed to fetch modules")
+      return { success: false, error: "Failed to fetch modules" }
+    }
+
+    const modules = modulesResult.data || []
+    const totalModules = modules.length
+
+    // Get user progress
+    const progressResult = await getUserProgress(userId)
+    if (!progressResult.success) {
+      console.error("❌ Failed to fetch user progress")
+      return { success: false, error: "Failed to fetch user progress" }
+    }
+
+    const progress = progressResult.data || []
+    const completedModules = progress.filter((p) => p.completed_at !== null)
+
+    console.log(`📊 Progress check: ${completedModules.length}/${totalModules} modules completed`)
+
+    // Check if all modules are completed
+    if (completedModules.length >= totalModules && totalModules > 0) {
+      console.log("🎉 All modules completed! Generating certificate...")
+
+      // Get user profile for certificate data
+      const profileResult = await getUserProfile(userId)
+      const userProfile = profileResult.success ? profileResult.data : null
+
+      // Calculate total training time
+      const totalTimeSpent = progress.reduce((total, p) => total + (p.time_spent_minutes || 0), 0)
+      const totalHours = Math.round((totalTimeSpent / 60) * 10) / 10
+
+      // Generate certificate
+      const certificateNumber = `ACA-${Date.now()}-${userId.slice(0, 8).toUpperCase()}`
+      const certificateData = {
+        user_name: userProfile?.full_name || "AI Compliance Professional",
+        company: userProfile?.company || "",
+        completion_date: new Date().toISOString(),
+        modules_completed: totalModules,
+        total_hours: totalHours,
+        modules_list: modules.map((m) => ({
+          title: m.title,
+          duration: m.duration_minutes,
+          completed_date: completedModules.find((p) => p.module_id === m.id)?.completed_at,
+        })),
+      }
+
+      const certificateResult = await createCertificate(userId, {
+        certificate_number: certificateNumber,
+        certificate_data: certificateData,
+        expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // 1 year
+      })
+
+      if (certificateResult.success) {
+        console.log("🎓 Certificate generated successfully!")
+        return { success: true, certificate: certificateResult.data, message: "Certificate generated!" }
+      } else {
+        console.error("❌ Failed to generate certificate")
+        return { success: false, error: "Failed to generate certificate" }
+      }
+    } else {
+      console.log(`📚 Still need to complete ${totalModules - completedModules.length} more modules`)
+      return { success: true, message: `${totalModules - completedModules.length} modules remaining` }
+    }
+  } catch (error) {
+    console.error("❌ Error checking certificate eligibility:", error)
+    return { success: false, error: error.message }
   }
 }
 
@@ -228,142 +318,41 @@ export const updateUserProgress = async (
 export const getAIBasicsVideos = async (limitCount?: number) => {
   try {
     console.log("🔍 getAIBasicsVideos called with limit:", limitCount)
-    console.log("🔗 Database instance:", !!db)
-    console.log("🔗 Environment check:", {
-      projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-      hasApiKey: !!process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-    })
 
-    // Skip cache for debugging
-    // const cacheKey = `ai_basics_videos_${limitCount || "all"}`
-    // const cached = getCachedData(cacheKey)
-    // if (cached) {
-    //   console.log("📦 Returning cached AI basics videos:", cached.length)
-    //   return { success: true, data: cached }
-    // }
+    const cacheKey = `ai_basics_videos_${limitCount || "all"}`
+    const cached = getCachedData(cacheKey)
+    if (cached) {
+      console.log("📦 Returning cached AI basics videos:", cached.length)
+      return { success: true, data: cached }
+    }
 
     console.log("🔍 Fetching AI basics videos from Firestore...")
 
-    // Test 1: Basic collection access
-    console.log("🧪 Test 1: Basic collection access...")
-    try {
-      const basicQuery = collection(db, "ai_basics_videos")
-      const basicSnapshot = await getDocs(basicQuery)
-      console.log(`📊 Basic query returned ${basicSnapshot.size} total documents`)
-
-      if (basicSnapshot.size === 0) {
-        console.log("❌ No documents found in ai_basics_videos collection")
-        return { success: true, data: [] }
-      }
-
-      // Log first few documents for debugging
-      basicSnapshot.docs.slice(0, 3).forEach((doc, index) => {
-        const data = doc.data()
-        console.log(`📄 Document ${index + 1}:`, {
-          id: doc.id,
-          title: data.title,
-          is_active: data.is_active,
-          order_index: data.order_index,
-        })
-      })
-    } catch (basicError) {
-      console.error("❌ Basic collection access failed:", basicError)
-      return { success: false, error: basicError }
-    }
-
-    // Test 2: Try without orderBy first
-    console.log("🧪 Test 2: Query with is_active filter only...")
-    try {
-      const activeOnlyQuery = query(collection(db, "ai_basics_videos"), where("is_active", "==", true))
-      const activeOnlySnapshot = await getDocs(activeOnlyQuery)
-      console.log(`📊 Active-only query returned ${activeOnlySnapshot.size} documents`)
-
-      if (activeOnlySnapshot.size > 0) {
-        const videos = activeOnlySnapshot.docs.map((doc) => {
-          const data = { id: doc.id, ...doc.data() }
-          console.log("🎬 Processing video:", {
-            id: data.id,
-            title: data.title,
-            is_active: data.is_active,
-            order_index: data.order_index,
-          })
-          return data
-        })
-
-        // Sort manually by order_index
-        videos.sort((a, b) => (a.order_index || 0) - (b.order_index || 0))
-
-        // Apply limit if specified
-        const finalVideos = limitCount ? videos.slice(0, limitCount) : videos
-
-        console.log(`✅ Successfully processed ${finalVideos.length} videos`)
-        // setCachedData(cacheKey, finalVideos)
-        return { success: true, data: finalVideos }
-      }
-    } catch (activeError) {
-      console.error("❌ Active-only query failed:", activeError)
-    }
-
-    // Test 3: Try with orderBy (might fail if index doesn't exist)
-    console.log("🧪 Test 3: Query with orderBy...")
+    // Try with orderBy first, fallback to manual sorting
+    let videos = []
     try {
       let q = query(collection(db, "ai_basics_videos"), where("is_active", "==", true), orderBy("order_index"))
-
       if (limitCount) {
         q = query(q, limit(limitCount))
-        console.log(`📊 Limiting to ${limitCount} videos`)
       }
-
-      console.log("🔍 Executing Firestore query with orderBy...")
       const querySnapshot = await getDocs(q)
-      console.log(`📊 Ordered query returned ${querySnapshot.size} documents`)
-
-      const videos = querySnapshot.docs.map((doc) => {
-        const data = { id: doc.id, ...doc.data() }
-        console.log("🎬 Processing ordered video:", {
-          id: data.id,
-          title: data.title,
-          is_active: data.is_active,
-          order_index: data.order_index,
-        })
-        return data
-      })
-
-      console.log(`✅ Successfully processed ${videos.length} ordered videos`)
-      // setCachedData(cacheKey, videos)
-      return { success: true, data: videos }
+      videos = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
     } catch (orderError) {
-      console.error("❌ Ordered query failed:", orderError)
-      console.error("❌ This might be due to missing Firestore index")
-
-      // Fallback: return unordered results
-      console.log("🔄 Falling back to unordered results...")
-      try {
-        const fallbackQuery = query(collection(db, "ai_basics_videos"), where("is_active", "==", true))
-        const fallbackSnapshot = await getDocs(fallbackQuery)
-        const videos = fallbackSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-
-        // Sort manually
-        videos.sort((a, b) => (a.order_index || 0) - (b.order_index || 0))
-
-        const finalVideos = limitCount ? videos.slice(0, limitCount) : videos
-        return { success: true, data: finalVideos }
-      } catch (fallbackError) {
-        console.error("❌ Fallback query also failed:", fallbackError)
-        return { success: false, error: fallbackError }
+      console.warn("⚠️ OrderBy failed, using manual sorting")
+      const fallbackQuery = query(collection(db, "ai_basics_videos"), where("is_active", "==", true))
+      const fallbackSnapshot = await getDocs(fallbackQuery)
+      videos = fallbackSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+      videos.sort((a, b) => (a.order_index || 0) - (b.order_index || 0))
+      if (limitCount) {
+        videos = videos.slice(0, limitCount)
       }
     }
 
-    // If we get here, something went wrong
-    return { success: true, data: [] }
+    console.log(`✅ Successfully processed ${videos.length} videos`)
+    setCachedData(cacheKey, videos)
+    return { success: true, data: videos }
   } catch (error) {
     console.error("❌ Error getting AI basics videos:", error)
-    console.error("❌ Error details:", {
-      name: error.name,
-      message: error.message,
-      code: error.code,
-      stack: error.stack,
-    })
     return { success: false, error }
   }
 }

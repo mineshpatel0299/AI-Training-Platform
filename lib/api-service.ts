@@ -23,8 +23,19 @@ export class ApiService {
 
   static async getTrainingModules() {
     try {
-      const response = await fetch(`${this.baseUrl}/api/modules`)
+      console.log("🔍 API Service: Fetching training modules...")
+      const response = await fetch(`${this.baseUrl}/api/modules`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        // Add cache control
+        cache: 'no-store'
+      })
+      
+      console.log("📡 API Response status:", response.status)
       const data = await response.json()
+      console.log("📊 API Response data:", data)
 
       if (!response.ok) {
         throw new Error(data.error || "Failed to fetch modules")

@@ -65,7 +65,7 @@ export default function CertificatePage() {
         if (modulesResult.success && progressResult.success) {
           const modules = modulesResult.data || []
           const progress = progressResult.data || []
-          const completedProgress = progress.filter((p: any) => p.completed_at !== null)
+          const completedProgress = progress.filter((p) => p.completed_at !== null)
 
           setCanGenerateCertificate(completedProgress.length >= modules.length && modules.length > 0)
         }
